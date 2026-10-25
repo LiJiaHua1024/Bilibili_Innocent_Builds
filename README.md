@@ -1,13 +1,25 @@
 # Bilibili Innocent Builds
 
+> [!CAUTION]
+> **极度不稳定的实验构建——比 Canary 更不稳定。**
+> 本仓库的 APK 仅供抢先尝鲜，或验证某个特定 Hotfix。可能存在崩溃、无法启动、Hook 失效、功能不完整及各种不适配，不建议作为日常版本。CI 通过不代表实机回归通过，也不代表某个修复已经确认有效。
+
 独立构建 [LiJiaHua1024/Bilibili_Innocent_Lab](https://github.com/LiJiaHua1024/Bilibili_Innocent_Lab) 的任意已推送分支，使用自己的固定证书签名。Fork 的 `main` 无需加入本仓库的提交，可以继续快进同步上游。
+
+实验包的发布规范与反馈要求见 [EXPERIMENTAL_RELEASES.md](EXPERIMENTAL_RELEASES.md)。功能成熟后争取合并上游并由上游正式发布；本仓库只承担实验分发和修复验证。
+
+## 实验预发布
+
+同一批分支 APK 集中到 [同一个 Pre-release](https://github.com/LiJiaHua1024/Bilibili_Innocent_Builds/releases)，共用一个日期标签。标题使用 `Nightly Build YYYYMMDD`，例如 `Nightly Build 20261025`，不标为 Latest。
+
+Release 只上传最终 Release APK，不上传 ZIP、Build Info、哈希文件或测试报告。极不稳定声明放在发布说明顶部，APK 文件名包含 `EXTREMELY-UNSTABLE`、分支名和源码短 SHA。各分支独立，不是功能合集，请按文件名选择需要测试的分支。
 
 ## 构建一个分支
 
 1. 打开 [Build signed branch APK](https://github.com/LiJiaHua1024/Bilibili_Innocent_Builds/actions/workflows/branch-build.yml)。
 2. 点击 **Run workflow**。GitHub 自带的 **Use workflow from** 选择本构建仓库的 `main`。
 3. 在 **source_branch** 填写 Fork 的分支完整名称，例如 `main`、`feat/npatch-compat`、`experiment/ai-insight`、`experiment/audio-enhance`、`experiment/lan-continuity-cast`、`feature/incognito-no-login` 或 `opt/power-saving`。
-4. 等待 `build` 与 `sign` 两个任务成功，从本次运行的 Artifacts 下载以 `branch-` 开头的最终安装包。
+4. 等待 `build` 与 `sign` 两个任务成功，从本次运行的 Artifacts 下载以 `UNSTABLE-EXPERIMENTAL-` 开头的最终安装包。早期工作流产物仍以 `branch-` 开头。
 
 所选分支不需要合并，也不需要包含本工作流。本流程只拉取 Fork 已推送的源码，不包含本地未提交或未推送的修改。构建手动触发，不自动创建 GitHub Release 或发送 Telegram 消息。
 
@@ -18,9 +30,11 @@ gh workflow run branch-build.yml --repo LiJiaHua1024/Bilibili_Innocent_Builds --
 gh run list --repo LiJiaHua1024/Bilibili_Innocent_Builds --workflow branch-build.yml
 ```
 
-## 产物和验证
+## Actions 产物和验证
 
-最终产物包含 `app-release.apk`、APK 文件 SHA-256、签名校验结果、APK 包信息和 `build-info.txt`。记录中分别注明源码仓库、分支、实际提交 SHA，以及构建工作流仓库和提交 SHA。最终产物保留 30 天，JVM 测试、完整 Lint 报告和 R8 符号保留 14 天。
+最终产物包含 `app-release.apk`、显著的不稳定性说明、APK 文件 SHA-256、签名校验结果、APK 包信息和 `build-info.txt`。记录中分别注明源码仓库、分支、实际提交 SHA，以及构建工作流仓库和提交 SHA。最终产物保留 30 天，JVM 测试、完整 Lint 报告和 R8 符号保留 14 天。
+
+这些辅助文件仅保留在 Actions Artifacts 中用于核验，不作为 Release 附件上传。
 
 以 `intermediate-` 开头的产物用于两个任务间传递，使用一次性签名，保留 1 天；不要把它当成最终版本安装。
 

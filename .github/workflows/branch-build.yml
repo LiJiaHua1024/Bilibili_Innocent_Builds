@@ -1,5 +1,5 @@
 name: Build signed branch APK
-run-name: Build Fork branch ${{ inputs.source_branch }}
+run-name: UNSTABLE branch build ${{ inputs.source_branch }}
 
 on:
   workflow_dispatch:
@@ -34,6 +34,15 @@ jobs:
       CI_GRADLE_JVMARGS: '-Xmx6144m -Dfile.encoding=UTF-8'
       JDK_JAVA_OPTIONS: '-XX:MaxMetaspaceSize=1024m -XX:ReservedCodeCacheSize=512m -XX:+UseCodeCacheFlushing'
     steps:
+      - name: Declare extreme experimental instability
+        run: |
+          echo '::warning title=EXTREMELY UNSTABLE::More unstable than Canary. For early experiments or targeted Hotfix verification only; no stability or compatibility guarantee.'
+          cat >> "$GITHUB_STEP_SUMMARY" <<'NOTICE'
+          > [!CAUTION]
+          > **极度不稳定的实验构建——比 Canary 更不稳定。**
+          > 仅供抢先尝鲜或验证特定 Hotfix，不建议日常使用。通过 CI 不代表完成实机回归、宿主适配或修复确认。
+          NOTICE
+
       - name: Validate source branch name
         env:
           SOURCE_BRANCH: ${{ inputs.source_branch }}
@@ -57,7 +66,7 @@ jobs:
           source_sha="$(git rev-parse HEAD)"
           branch_slug="$(printf '%s' "$SOURCE_BRANCH" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_' | cut -c1-80)"
           echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=branch-${branch_slug}-${source_sha:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=UNSTABLE-EXPERIMENTAL-${branch_slug}-${source_sha:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Java
         uses: actions/setup-java@v6.0.1
@@ -207,8 +216,18 @@ jobs:
             printf 'certificate_sha256=%s\n' "$actual"
             printf 'run_url=%s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
           } > branch-artifact/build-info.txt
+          cat > branch-artifact/READ-ME-FIRST-EXTREMELY-UNSTABLE.txt <<'NOTICE'
+          极度不稳定的实验构建——比 Canary 更不稳定
+
+          仅供抢先尝鲜，或针对特定 Hotfix 验证问题是否修复。不建议作为日常版本。
+          可能存在崩溃、无法启动、Hook 失效、功能不完整以及宿主、设备、系统或注入框架不适配。
+          通过构建、单测和完整 Lint，不代表完成实机回归，也不代表目标问题已修复。
+          各分支不是功能合集；同包名、同签名的包会互相覆盖，版本码降低时可能无法直接覆盖安装。
+          本证书与上游发布证书不同，将来切回上游正式版也不保证能够直接覆盖安装。
+          反馈请附分支名、source_sha、构建链接、宿主版本、系统/设备/注入框架与复现步骤。
+          NOTICE
           (cd branch-artifact && sha256sum app-release.apk > SHA256SUMS)
-          cat branch-artifact/build-info.txt branch-artifact/SHA256SUMS >> "$GITHUB_STEP_SUMMARY"
+          cat branch-artifact/READ-ME-FIRST-EXTREMELY-UNSTABLE.txt branch-artifact/build-info.txt branch-artifact/SHA256SUMS >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload verified signed branch APK
         uses: actions/upload-artifact@v7.0.2
