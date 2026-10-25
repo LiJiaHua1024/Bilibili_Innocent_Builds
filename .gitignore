@@ -1,0 +1,8 @@
+# Signing keys and local configuration must never enter Git.
+*.p12
+*.pfx
+*.jks
+*.keystore
+.env
+.env.*
+captures/
