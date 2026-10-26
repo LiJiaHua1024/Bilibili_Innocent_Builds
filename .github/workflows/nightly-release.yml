@@ -1,0 +1,121 @@
+name: Build and publish Nightly
+run-name: Nightly update ${{ inputs.source_branches }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_branches:
+        description: 'Comma-separated Fork branches to update, or all (main is excluded)'
+        required: true
+        type: string
+        default: feat/npatch-compat
+
+permissions:
+  contents: read
+
+# Preserve queued publication requests instead of replacing the previous pending run.
+concurrency:
+  group: nightly-publication
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  plan:
+    if: github.repository == 'LiJiaHua1024/Bilibili_Innocent_Builds' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      has_updates: ${{ steps.plan.outputs.has_updates }}
+      plan_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          python-version: '3.12'
+          enable-cache: false
+      - name: Validate publishing tooling
+        run: uv run --locked python -m unittest discover -s tests -v
+      - name: Freeze selected source commits and previous release
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_BRANCHES: ${{ inputs.source_branches }}
+        run: uv run --locked python scripts/nightly_release.py plan --branches "$SOURCE_BRANCHES" --output release-plan.json --github-output "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@v7.0.2
+        id: upload
+        with:
+          name: nightly-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-plan.json
+          if-no-files-found: error
+          retention-days: 7
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.has_updates == 'true'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/branch-build.yml
+    with:
+      source_branch: ${{ matrix.branch }}
+      source_sha: ${{ matrix.sha }}
+    # The called signing job resolves these names from its alpha-release environment.
+    secrets:
+      ANDROID_SIGNING_KEY_BASE64: ${{ secrets.ANDROID_SIGNING_KEY_BASE64 }}
+      ANDROID_SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+      ANDROID_SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
+      ANDROID_SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
+      ANDROID_SIGNING_CERT_SHA256: ${{ secrets.ANDROID_SIGNING_CERT_SHA256 }}
+
+  publish:
+    needs: [plan, build]
+    if: needs.plan.outputs.has_updates == 'true' && needs.build.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    # No Fork checkout, Gradle execution, or private signing key on this runner.
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v10.3.2
+        with:
+          python-version: '3.12'
+          enable-cache: false
+      - uses: actions/setup-java@v6.0.1
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v4.0.4
+        with:
+          packages: platform-tools
+      - name: Install APK verification tools
+        run: sdkmanager 'build-tools;37.0.0'
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          artifact-ids: ${{ needs.plan.outputs.plan_artifact_id }}
+          path: release-plan
+          merge-multiple: true
+          digest-mismatch: error
+      - name: Publish verified snapshot and branch update notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: uv run --locked python scripts/nightly_release.py publish --plan release-plan/release-plan.json --work-dir publication --run-id "$GITHUB_RUN_ID" --attempt "$GITHUB_RUN_ATTEMPT" --workflow-sha "$GITHUB_SHA" --apksigner "$ANDROID_HOME/build-tools/37.0.0/apksigner" --aapt "$ANDROID_HOME/build-tools/37.0.0/aapt"
+      - name: Retain publication diagnostics in Actions only
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: nightly-publication-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            publication/*.json
+            publication/*.md
+          if-no-files-found: warn
+          retention-days: 14

@@ -1,0 +1,9 @@
+[project]
+name = "bilibili-innocent-builds"
+version = "0.1.0"
+description = "Verified nightly snapshot publishing for Bilibili Innocent Builds"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.uv]
+package = false

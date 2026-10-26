@@ -6,3 +6,9 @@
 .env
 .env.*
 captures/
+.venv/
+__pycache__/
+*.py[cod]
+publication/
+release-plan/
+release-plan.json

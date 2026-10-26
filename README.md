@@ -12,7 +12,27 @@
 
 同一批分支 APK 集中到 [同一个 Pre-release](https://github.com/LiJiaHua1024/Bilibili_Innocent_Builds/releases)，共用一个日期标签。标题使用 `Nightly Build YYYYMMDD`，例如 `Nightly Build 20261025`，不标为 Latest。
 
-Release 只上传最终 Release APK，不上传 ZIP、Build Info、哈希文件或测试报告。极不稳定声明放在发布说明顶部，APK 文件名包含 `EXTREMELY-UNSTABLE`、分支名和源码短 SHA。各分支独立，不是功能合集，请按文件名选择需要测试的分支。
+Release 只上传最终 Release APK，不上传 ZIP、Build Info、哈希文件或测试报告。极不稳定声明放在发布说明顶部，APK 文件名只保留 `BIL-<branch-slug>-<sha12>.apk`。各分支独立，不是功能合集，请按文件名选择需要测试的分支。
+
+## 一键构建并发布
+
+打开 Actions 中的 **Build and publish Nightly**，选择本构建仓库的 `main`，在 **source_branches** 中填写要更新的 Fork 分支。可以填一个分支、逗号分隔的多个分支，或 `all`（不含 Fork 的 `main`）。
+
+这次点击表示构建成功后自动创建实验标签并公开发布预发布。GitHub 接收任务后即可关闭本机，后续构建、签名和发布均在 GitHub 托管 runner 上完成。
+
+```powershell
+gh workflow run nightly-release.yml --repo LiJiaHua1024/Bilibili_Innocent_Builds --ref main -f source_branches=feat/npatch-compat
+```
+
+流水线会先固定源码提交，只重建相对上一份已发布 Nightly 有变化的所选分支，其余 APK 沿用上一版。例如只更新 NPatch 时，新 Release 仍包含六个包，其中一个是新构建，另外五个保持原字节。选择的分支全都没有源码变化时，成功结束并跳过构建和发布。
+
+每次说明都会分开列出 **本次更新的分支**、**首次加入的分支**及 **沿用上次产物的分支**，附源码提交和构建来源。变更条目根据新旧源码之间的提交记录生成；分叉、回退或无法比较的历史会明确说明，不把提交信息里的“修复”当成实机验证结果。不需要额外 LLM API 密钥。
+
+标题和标签按发布时的北京时间生成：`Nightly Build 20261026` / `nightly-20261026`；同一天再次发布依次使用 `.2`、`.3`，不覆盖旧快照。任何选中分支构建失败、签名/哈希不符，或构建期间上一版 Nightly 被其他操作改动，都不公开新 Release。
+
+失败后可重试本次工作流的失败任务。发布器可以复用同一次运行里先前已经成功的签名产物；若发布响应丢失，会读取并恢复原来的草稿或已发布结果，避免再发一份。残缺或内容不同的草稿附件会停止并要求检查，不覆盖它们。
+
+沿用包需要从上一版 Release 下载，这些自动化请求可能计入旧附件的下载次数，不代表有相同数量的外部用户下载。发布说明中的隐藏 JSON 注释只保存分支与包的来源状态，不新增附件；请保留它。第一份手工发布的 Nightly 无需补这个注释，脚本会从现有分支表和 APK 名称识别。
 
 ## 构建一个分支
 
@@ -21,7 +41,7 @@ Release 只上传最终 Release APK，不上传 ZIP、Build Info、哈希文件�
 3. 在 **source_branch** 填写 Fork 的分支完整名称，例如 `main`、`feat/npatch-compat`、`experiment/ai-insight`、`experiment/audio-enhance`、`experiment/lan-continuity-cast`、`feature/incognito-no-login` 或 `opt/power-saving`。
 4. 等待 `build` 与 `sign` 两个任务成功，从本次运行的 Artifacts 下载以 `UNSTABLE-EXPERIMENTAL-` 开头的最终安装包。早期工作流产物仍以 `branch-` 开头。
 
-所选分支不需要合并，也不需要包含本工作流。本流程只拉取 Fork 已推送的源码，不包含本地未提交或未推送的修改。构建手动触发，不自动创建 GitHub Release 或发送 Telegram 消息。
+所选分支不需要合并，也不需要包含本工作流。本流程只拉取 Fork 已推送的源码，不包含本地未提交或未推送的修改。这个 **Build signed branch APK** 入口仅构建，不创建 Release；需要发布时使用上面的独立入口。两个入口都不发送 Telegram 消息，也没有配置每日定时触发。
 
 也可以在登录 GitHub CLI 后执行：
 
@@ -67,6 +87,12 @@ $env:Path = "$env:JAVA_HOME/bin;$env:Path"
 
 构建 runner 只使用临时密钥，不关联签名环境。构建通过后，签名任务在全新 runner 上通过精确 artifact ID 下载中间 APK，并要求摘要校验通过。它不检出或执行 Fork 的代码，使用官方 `apksigner` 替换临时签名，校验证书 SHA-256、单一签名者及非 Debug 属性，再上传最终 APK。
 
+自动发布 runner 仅运行本仓库固定提交的发布工具，不执行 Fork 代码，也不读取长期签名私钥。只有这个任务持有 BIB 的 `contents: write`；编译和规划任务保持只读。发布前还会检查所有 APK 的固定证书、包名和非 Debug 属性。更换证书时，需要同步审阅 `scripts/nightly_release.py` 中的公开证书指纹。
+
 ## 维护
 
 源代码更新只发生在 Fork；构建配置更新只发生在本仓库。未来新增分支直接填写其名称即可，无需改工作流。签名仍可在 Fork 的现有环境中保留，两边使用同一证书；GitHub Secrets 不会跨仓库自动共享。
+
+发布工具使用 Python 3.12+ 与 uv，无第三方 Python 依赖。开发时运行 `uv sync --locked`，再用 `uv run --locked python -m unittest discover -s tests -v` 检查增量规划、包校验、发布说明、失败恢复和重试幂等性。
+
+串行发布使用 GitHub 当前支持的 [`concurrency.queue: max`](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)，保留排队请求。actionlint 1.7.12 尚不认识这个字段；本地检查仅针对这一条已核实的新语法使用精确兼容过滤，其余规则不跳过。首次上线后仍需完成云端构建、环境 Secrets 和发布的联动验证。
