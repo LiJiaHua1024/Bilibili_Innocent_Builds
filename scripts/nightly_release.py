@@ -28,10 +28,11 @@ ASSET = re.compile(r"BIL-(?:EXTREMELY-UNSTABLE-)?(.+)-([0-9a-f]{12})\.apk\Z")
 STATE = re.compile(r"<!-- bib-nightly-state-v1\n(.*?)\n-->", re.S)
 MAX_APK = 1024 * 1024 * 1024
 WARNING = (
-    "**极度不稳定的实验构建，比 Canary 更不稳定。**\n\n"
-    "仅供急于尝鲜，或验证某个特定 Hotfix。不建议日常使用，可能存在崩溃、无法启动、Hook 失效、功能不完整及各种不适配。"
-    "CI 通过不代表完成实机回归，更不代表目标问题已经修复。\n"
+    "**不稳定的实验构建，比 Canary 更不稳定。**\n\n"
+    "这些 APK 来自尚未稳定、尚未合并上游的开发分支。请准备好处理崩溃、无法启动、Hook 失效、功能不完整及各种不适配。\n\n"
+    "各 APK 是独立分支的快照，功能没有合并。请按分支选择需要测试的包。\n"
 )
+RELEASE_CLOSING = "这些功能成熟后将合并上游，由上游正式发布。本仓库只承担极不稳定的尝鲜与修复验证分发。"
 
 
 class ReleaseError(RuntimeError):
@@ -475,40 +476,30 @@ def display(value: str) -> str:
 def release_notes(plan: dict, entries: list[Entry], tag: str, run_id: int, workflow_sha: str) -> str:
     parse_tag(tag)
     updated = {item["branch"]: item for item in plan["updates"]}
-    lines = [WARNING, "## 本次更新的分支", ""]
+    lines = [WARNING, "本次更新：", ""]
     for branch, update in updated.items():
         label = "更新" if update["before"] else "首次加入"
         transition = f"{update['before'][:12]} → {update['sha'][:12]}" if update["before"] else update["sha"][:12]
-        lines.append(f"- **{label}** <code>{display(branch)}</code>：{transition}")
         changes = update["changes"]
+        lines.append(f"- {label} <code>{display(branch)}</code>：[{transition}]({changes['url']})")
         if changes["status"] in ("diverged", "behind"):
-            lines.append("  - 分支历史存在分叉或回退，请查看源码对比；不能按线性增量理解。")
+            lines.append("  - 分支有分叉或回退，请查看更新记录。")
         if changes["status"] == "unavailable":
-            lines.append("  - 提交对比暂不可用，本次仅确认源码版本发生变化。")
-        for subject in changes["subjects"]:
-            lines.append(f"  - {display(subject)}")
-        if changes["total"] > len(changes["subjects"]):
-            lines.append(f"  - 另有 {changes['total'] - len(changes['subjects'])} 条提交，见完整对比。")
-        lines.append(f"  - [源码记录]({changes['url']})")
-    lines += ["", "## 沿用上次产物的分支", ""]
+            lines.append("  - 暂时无法对比提交，请查看源码记录。")
+    lines.append("")
     carried = [entry for entry in entries if entry.branch not in updated]
     if carried:
-        lines.append(f"以下包沿用 [{plan['base_tag']}](https://github.com/{REPOSITORY}/releases/tag/{plan['base_tag']})，本次未重新构建：")
-        lines += [f"- <code>{display(entry.branch)}</code>：{entry.source_sha[:12]}" for entry in carried]
+        lines.append(f"其余分支沿用 [{plan['base_tag']}](https://github.com/{REPOSITORY}/releases/tag/{plan['base_tag']}) 的包，本次未重新构建。")
     else:
-        lines.append("无。本次所有附件均为新构建产物。")
-    lines += ["", "## 下载", "", "这些 APK 来自独立分支，不是功能合集。请选择需要测试的分支；同包名、同签名的包会互相覆盖。", "",
-              "| 分支 | 本次处理 | Release APK | 源码提交 | 构建来源 |", "| --- | --- | --- | --- | --- |"]
+        lines.append("本次所有分支均为新构建。")
+    lines += ["", "| 分支 | 状态 | Release APK | 源码提交 | CI 构建 |", "| --- | --- | --- | --- | --- |"]
     for entry in entries:
         kind = "更新" if entry.branch in updated and updated[entry.branch]["before"] else "首次加入" if entry.branch in updated else "沿用"
         download = f"https://github.com/{REPOSITORY}/releases/download/{tag}/{entry.asset_name}"
         commit = f"https://github.com/{SOURCE}/commit/{entry.source_sha}"
-        origin = f"[CI]({entry.run_url})" if entry.run_url else f"[上一版](https://github.com/{REPOSITORY}/releases/tag/{plan['base_tag']})"
+        origin = f"[通过]({entry.run_url})" if entry.run_url else f"[上一版](https://github.com/{REPOSITORY}/releases/tag/{plan['base_tag']})"
         lines.append(f"| <code>{display(entry.branch)}</code> | {kind} | [APK]({download}) | [{entry.source_sha[:12]}]({commit}) | {origin} |")
-    lines += ["", "本次更新包通过 Release/R8、JVM 单测、完整 Lint 和固定签名检查；沿用包重新校验了哈希、签名与包属性，没有重新构建。未执行本轮实机回归，提交记录中的修复仍需实际验证。",
-              "", "附件仅包含 Release APK。不同分支保留各自版本码，低版本码可能无法覆盖安装；本证书与上游不同，切回上游正式版不保证能直接覆盖，请先考虑配置备份和迁移。",
-              "", "反馈请附分支、源码提交、宿主版本、设备/系统、注入框架与复现步骤，并说明原问题是否仍可复现、是否出现回归。成熟功能将争取合并上游，由上游正式发布。",
-              "", "GitHub 自动生成的 Source code 压缩包属于 BIB 构建配置，模块源码请查看上表。", ""]
+    lines += ["", RELEASE_CLOSING, ""]
     state = {"schema": 1, "source_repository": SOURCE, "run_id": run_id, "workflow_sha": workflow_sha,
              "base_tag": plan["base_tag"], "updated_branches": list(updated), "entries": [entry.serial() for entry in entries]}
     return "\n".join(lines) + state_comment(state) + "\n"

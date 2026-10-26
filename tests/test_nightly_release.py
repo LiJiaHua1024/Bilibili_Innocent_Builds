@@ -343,19 +343,20 @@ class NightlyTests(unittest.TestCase):
         notes = n.release_notes(fixture_plan(release([fixture_entry(), entries[1]])), entries,
                                 "nightly-20261026", RUN, WORKFLOW)
         self.assertTrue(notes.startswith(n.WARNING))
-        self.assertIn("本次更新的分支", notes)
-        self.assertIn("沿用上次产物的分支", notes)
+        self.assertIn(f"更新 <code>{BRANCH}</code>", notes)
+        self.assertIn(f"[{OLD[:12]} → {NEW[:12]}]", notes)
+        self.assertIn(f"| <code>{SECOND}</code> | 沿用 |", notes)
         self.assertEqual(n.state_from(notes)["updated_branches"], [BRANCH])
         self.assertIn("本次未重新构建", notes)
         self.assertNotIn("BIL-EXTREMELY-UNSTABLE-", notes)
 
-    def test_commit_subject_html_is_escaped(self):
+    def test_commit_subjects_are_linked_without_dumping_into_notes(self):
         plan = fixture_plan()
         plan["updates"][0]["changes"]["subjects"] = ["<script>bad</script> | table"]
         notes = n.release_notes(plan, [fixture_entry(sha=NEW)], "nightly-20261026", RUN, WORKFLOW)
         self.assertNotIn("<script>", notes)
-        self.assertIn("&lt;script&gt;", notes)
-        self.assertIn("\\| table", notes)
+        self.assertNotIn("table", notes)
+        self.assertIn(plan["updates"][0]["changes"]["url"], notes)
 
     def test_publish_dry_run_never_writes_to_github(self):
         entry = fixture_entry(sha=NEW)
