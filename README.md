@@ -50,6 +50,17 @@ gh workflow run branch-build.yml --repo LiJiaHua1024/Bilibili_Innocent_Builds --
 gh run list --repo LiJiaHua1024/Bilibili_Innocent_Builds --workflow branch-build.yml
 ```
 
+## 集成模式内测构建
+
+面向内测群的 **Build signed embedded APK** 单独构建 `:app:assembleEmbedded`：与 Release 同形态、同固定签名，包名为 `com.Bilibili_Innocent_Lab.xposedmodule.embedded`，可与正式模块并存。构建任务只使用一次性密钥，固定证书只在隔离签名任务中用于重签，源码分支代码不会在持有长期私钥的 runner 上执行。
+
+```powershell
+gh workflow run embedded-build.yml --repo LiJiaHua1024/Bilibili_Innocent_Builds --ref main -f source_branch=feat/npatch-compat
+gh run list --repo LiJiaHua1024/Bilibili_Innocent_Builds --workflow embedded-build.yml
+```
+
+产物 artifact 以 `EMBEDDED-` 开头，保留 30 天，R8 符号另存 14 天。该入口只构建并上传 artifact，不创建 Release，也不进入 Nightly 汇总。源码侧的构建变体、包名与签名约定见 Fork 分支内的 `docs/embedded-test-build.md`。
+
 ## Actions 产物和验证
 
 最终产物包含 `app-release.apk`、显著的不稳定性说明、APK 文件 SHA-256、签名校验结果、APK 包信息和 `build-info.txt`。记录中分别注明源码仓库、分支、实际提交 SHA，以及构建工作流仓库和提交 SHA。最终产物保留 30 天，JVM 测试、完整 Lint 报告和 R8 符号保留 14 天。

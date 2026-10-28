@@ -1,0 +1,272 @@
+name: Build signed embedded APK
+run-name: embedded test build ${{ inputs.source_branch }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_branch:
+        description: 'Fork branch to build, for example feat/npatch-compat'
+        required: true
+        type: string
+        default: feat/npatch-compat
+
+permissions:
+  contents: read
+
+env:
+  SOURCE_REPOSITORY: LiJiaHua1024/Bilibili_Innocent_Lab
+  EMBEDDED_PACKAGE: com.Bilibili_Innocent_Lab.xposedmodule.embedded
+
+concurrency:
+  group: embedded-build-${{ inputs.source_branch }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build intermediate embedded APK
+    if: github.repository == 'LiJiaHua1024/Bilibili_Innocent_Builds' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+      branch_slug: ${{ steps.source.outputs.branch_slug }}
+      artifact_name: ${{ steps.source.outputs.artifact_name }}
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    env:
+      CI_GRADLE_JVMARGS: '-Xmx6144m -Dfile.encoding=UTF-8'
+      JDK_JAVA_OPTIONS: '-XX:MaxMetaspaceSize=1024m -XX:ReservedCodeCacheSize=512m -XX:+UseCodeCacheFlushing'
+    steps:
+      - name: Validate source branch name
+        env:
+          SOURCE_BRANCH: ${{ inputs.source_branch }}
+        run: |
+          set -euo pipefail
+          git check-ref-format "refs/heads/$SOURCE_BRANCH"
+
+      - name: Check out selected branch
+        uses: actions/checkout@v7.0.1
+        with:
+          # The source branch does not need to contain this workflow.
+          repository: ${{ env.SOURCE_REPOSITORY }}
+          ref: ${{ format('refs/heads/{0}', inputs.source_branch) }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Record exact source
+        id: source
+        env:
+          SOURCE_BRANCH: ${{ inputs.source_branch }}
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse HEAD)"
+          branch_slug="$(printf '%s' "$SOURCE_BRANCH" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_' | cut -c1-80)"
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "branch_slug=$branch_slug" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=EMBEDDED-${branch_slug}-${source_sha:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Java
+        uses: actions/setup-java@v6.0.1
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6.4.0
+        with:
+          # Branch builds must not save unverified state into the release cache.
+          cache-disabled: true
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4.0.4
+        with:
+          packages: platform-tools
+
+      - name: Install Android toolchain
+        run: sdkmanager 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;29.0.14206865' 'cmake;3.31.5'
+
+      - name: Generate disposable build identity
+        run: |
+          set -euo pipefail
+          password="$(openssl rand -hex 32)"
+          echo "::add-mask::$password"
+          export TEMP_SIGNING_PASSWORD="$password"
+          echo "TEMP_SIGNING_PASSWORD=$password" >> "$GITHUB_ENV"
+          keytool -genkeypair -alias branch-build -keyalg RSA -keysize 2048 \
+            -validity 2 -dname 'CN=Disposable branch build' -storetype PKCS12 \
+            -keystore "$RUNNER_TEMP/branch-build.p12" \
+            -storepass:env TEMP_SIGNING_PASSWORD -keypass:env TEMP_SIGNING_PASSWORD -noprompt
+
+      - name: Build embedded APK with the disposable key
+        working-directory: Bilibili_Innocent_Lab
+        env:
+          INNOCENT_LAB_SIGNING_STORE_FILE: ${{ runner.temp }}/branch-build.p12
+          INNOCENT_LAB_SIGNING_KEY_ALIAS: branch-build
+        run: |
+          set -euo pipefail
+          export INNOCENT_LAB_SIGNING_STORE_PASSWORD="$TEMP_SIGNING_PASSWORD"
+          export INNOCENT_LAB_SIGNING_KEY_PASSWORD="$TEMP_SIGNING_PASSWORD"
+          ./gradlew "-Dorg.gradle.jvmargs=${CI_GRADLE_JVMARGS}" \
+            :app:assembleEmbedded --console=plain --no-daemon
+          configs="$(grep -rl 'EMBEDDED_MODE_SUPPORTED = true' app/build/generated || true)"
+          if [[ -z "$configs" ]]; then
+            echo 'Generated sources do not mark EMBEDDED_MODE_SUPPORTED as true.' >&2
+            exit 1
+          fi
+          if [[ "$(wc -l <<< "$configs")" -ne 1 ]]; then
+            echo 'Expected exactly one generated BuildConfig with the embedded flag:' >&2
+            echo "$configs" >&2
+            exit 1
+          fi
+          test -s app/build/outputs/apk/embedded/app-embedded.apk
+
+      - name: Upload intermediate APK for isolated signing
+        id: upload
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: intermediate-${{ steps.source.outputs.artifact_name }}
+          path: Bilibili_Innocent_Lab/app/build/outputs/apk/embedded/app-embedded.apk
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Upload embedded R8 symbols
+        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: symbols-${{ steps.source.outputs.artifact_name }}
+          path: Bilibili_Innocent_Lab/app/build/outputs/mapping/embedded/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Remove disposable keystore
+        if: ${{ always() }}
+        run: rm -f "$RUNNER_TEMP/branch-build.p12"
+
+  sign:
+    name: Sign embedded APK in isolated runner
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: alpha-release
+    # Never check out or execute source-branch code on this runner.
+    steps:
+      - name: Set up Java
+        uses: actions/setup-java@v6.0.1
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4.0.4
+        with:
+          packages: platform-tools
+
+      - name: Install signing tools
+        run: sdkmanager 'build-tools;37.0.0'
+
+      - name: Download exact intermediate artifact
+        uses: actions/download-artifact@v8.0.2
+        with:
+          artifact-ids: ${{ needs.build.outputs.artifact_id }}
+          path: intermediate
+          merge-multiple: true
+          digest-mismatch: error
+
+      - name: Apply fixed signing identity and verify embedded APK
+        env:
+          SIGNING_KEY_BASE64: ${{ secrets.ANDROID_SIGNING_KEY_BASE64 }}
+          SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_SIGNING_STORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_SIGNING_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_SIGNING_KEY_PASSWORD }}
+          EXPECTED_CERT_SHA256: ${{ secrets.ANDROID_SIGNING_CERT_SHA256 }}
+          SOURCE_BRANCH: ${{ inputs.source_branch }}
+          SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+          BRANCH_SLUG: ${{ needs.build.outputs.branch_slug }}
+          EXPECTED_PACKAGE: ${{ env.EMBEDDED_PACKAGE }}
+        run: |
+          set -euo pipefail
+          : "${SIGNING_KEY_BASE64:?Missing ANDROID_SIGNING_KEY_BASE64}"
+          : "${SIGNING_STORE_PASSWORD:?Missing ANDROID_SIGNING_STORE_PASSWORD}"
+          : "${SIGNING_KEY_ALIAS:?Missing ANDROID_SIGNING_KEY_ALIAS}"
+          : "${SIGNING_KEY_PASSWORD:?Missing ANDROID_SIGNING_KEY_PASSWORD}"
+          : "${EXPECTED_CERT_SHA256:?Missing ANDROID_SIGNING_CERT_SHA256}"
+          : "${EXPECTED_PACKAGE:?Missing expected embedded package}"
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          umask 077
+          keystore="$RUNNER_TEMP/embedded-release.p12"
+          trap 'rm -f "$RUNNER_TEMP/embedded-release.p12"' EXIT
+          printf '%s' "$SIGNING_KEY_BASE64" | base64 --decode > "$keystore"
+          test -s "$keystore"
+
+          apk_filename="BIL-${BRANCH_SLUG}-${SOURCE_SHA:0:12}-embedded.apk"
+          mkdir -p embedded-artifact
+          tools="$ANDROID_HOME/build-tools/37.0.0"
+          # apksigner strips the disposable signature before signing with the fixed key.
+          "$tools/apksigner" sign --ks "$keystore" --ks-key-alias "$SIGNING_KEY_ALIAS" \
+            --ks-pass env:SIGNING_STORE_PASSWORD --key-pass env:SIGNING_KEY_PASSWORD \
+            --out "embedded-artifact/$apk_filename" intermediate/app-embedded.apk
+          "$tools/apksigner" verify --verbose --print-certs "embedded-artifact/$apk_filename" > embedded-artifact/signature.txt
+          # Build Tools 37 prefixes these lines with V2/V3.0 instead of Signer #1.
+          actual="$(sed -n 's/^.*certificate SHA-256 digest: //p' embedded-artifact/signature.txt | tr -d ': \r' | tr 'A-F' 'a-f' | sort -u)"
+          expected="$(printf '%s' "$EXPECTED_CERT_SHA256" | tr -d ':[:space:]' | tr 'A-F' 'a-f')"
+          [[ "$expected" =~ ^[0-9a-f]{64}$ && "$actual" == "$expected" ]]
+          grep -Eq '^Number of signers: 1$' embedded-artifact/signature.txt
+
+          "$tools/aapt" dump badging "embedded-artifact/$apk_filename" > embedded-artifact/apk-info.txt
+          package_name="$(sed -n "s/^package: name='\([^']*\)'.*/\1/p" embedded-artifact/apk-info.txt | head -n 1)"
+          version_code="$(sed -n "s/^package: name='[^']*' versionCode='\([^']*\)'.*/\1/p" embedded-artifact/apk-info.txt | head -n 1)"
+          version_name="$(sed -n "s/^package: name='[^']*' versionCode='[^']*' versionName='\([^']*\)'.*/\1/p" embedded-artifact/apk-info.txt | head -n 1)"
+          if [[ "$package_name" != "$EXPECTED_PACKAGE" ]]; then
+            echo "Refusing to publish unexpected package: $package_name" >&2
+            exit 1
+          fi
+          if [[ -z "$version_code" || -z "$version_name" ]]; then
+            echo 'APK version metadata is missing.' >&2
+            exit 1
+          fi
+          if grep -q '^application-debuggable' embedded-artifact/apk-info.txt; then
+            echo 'Refusing to publish a debuggable APK.' >&2
+            exit 1
+          fi
+
+          apk_sha256="$(sha256sum "embedded-artifact/$apk_filename" | awk '{print $1}')"
+          {
+            printf 'build_channel=embedded-test\n'
+            printf 'embedded_mode_supported=true\n'
+            printf 'source_repository=%s\n' "$SOURCE_REPOSITORY"
+            printf 'branch=%s\n' "$SOURCE_BRANCH"
+            printf 'source_sha=%s\n' "$SOURCE_SHA"
+            printf 'workflow_sha=%s\n' "$GITHUB_SHA"
+            printf 'workflow_repository=%s\n' "$GITHUB_REPOSITORY"
+            printf 'apk_package_name=%s\n' "$package_name"
+            printf 'apk_version_name=%s\n' "$version_name"
+            printf 'apk_version_code=%s\n' "$version_code"
+            printf 'apk_debuggable=false\n'
+            printf 'certificate_sha256=%s\n' "$actual"
+            printf 'apk_filename=%s\n' "$apk_filename"
+            printf 'apk_sha256=%s\n' "$apk_sha256"
+            printf 'run_url=%s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+          } > embedded-artifact/build-info.txt
+          cat > embedded-artifact/READ-ME-FIRST-INTERNAL-TEST.txt <<'NOTICE'
+          集成模式内测包（仅供内测群验证）
+
+          与正式 Release 同形态、同固定签名，但包名为
+          com.Bilibili_Innocent_Lab.xposedmodule.embedded，并已打开集成模式门控。
+          它与正式模块可以并存；配置、条款、免 Root 授权和历史各自独立。
+          重新修补宿主时必须使用同一张固定证书签名，否则 signature 权限通道会降级。
+          本包不是 Release，不随 Nightly 发布，不代表集成模式已恢复对外支持。
+          反馈请附分支名、source_sha、构建链接、宿主版本、系统/设备与注入框架。
+          NOTICE
+          (cd embedded-artifact && sha256sum "$apk_filename" build-info.txt > SHA256SUMS && sha256sum -c SHA256SUMS)
+          cat embedded-artifact/READ-ME-FIRST-INTERNAL-TEST.txt embedded-artifact/build-info.txt >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload verified signed embedded APK
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: ${{ needs.build.outputs.artifact_name }}
+          path: embedded-artifact/
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove temporary release keystore
+        if: ${{ always() }}
+        run: rm -f "$RUNNER_TEMP/embedded-release.p12"
