@@ -59,7 +59,15 @@ gh workflow run embedded-build.yml --repo LiJiaHua1024/Bilibili_Innocent_Builds 
 gh run list --repo LiJiaHua1024/Bilibili_Innocent_Builds --workflow embedded-build.yml
 ```
 
-产物 artifact 以 `EMBEDDED-` 开头，保留 30 天，R8 符号另存 14 天。该入口只构建并上传 artifact，不创建 Release，也不进入 Nightly 汇总。源码侧的构建变体、包名与签名约定见 Fork 分支内的 `docs/embedded-test-build.md`。
+默认只产生**一个 artifact**：`BIL-embedded-<branch>-<sha12>`，保留 30 天；解压后里面只有可直接安装的 APK。用于隔离签名的 `intermediate-` artifact 会在签名成功后自动删除。R8 符号默认不上传，需要排查崩溃时重新运行并勾选 `keep_symbols`（或传 `-f keep_symbols=true`），会额外生成 `symbols-...` artifact，保留 14 天。
+
+```powershell
+# 运行结束后，直接取回只含 APK 的 artifact（gh 会自动解压）
+gh run download <run-id> --repo LiJiaHua1024/Bilibili_Innocent_Builds `
+  -n BIL-embedded-feat_npatch-compat-<sha12> -D .\embedded
+```
+
+该入口只构建并上传 artifact，不创建 Release，也不进入 Nightly 汇总。源码侧的构建变体、包名与签名约定见 Fork 分支内的 `docs/embedded-test-build.md`。
 
 ## Actions 产物和验证
 

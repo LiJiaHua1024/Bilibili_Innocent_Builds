@@ -9,9 +9,16 @@ on:
         required: true
         type: string
         default: feat/npatch-compat
+      keep_symbols:
+        description: 'Also upload the R8 mapping (developer-only; default keeps only the APK artifact)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
+  # The sign job deletes its intermediate artifact after a successful build.
+  actions: write
 
 env:
   SOURCE_REPOSITORY: LiJiaHua1024/Bilibili_Innocent_Lab
@@ -29,6 +36,7 @@ jobs:
     timeout-minutes: 60
     outputs:
       source_sha: ${{ steps.source.outputs.sha }}
+      sha_short: ${{ steps.source.outputs.sha_short }}
       branch_slug: ${{ steps.source.outputs.branch_slug }}
       artifact_name: ${{ steps.source.outputs.artifact_name }}
       artifact_id: ${{ steps.upload.outputs.artifact-id }}
@@ -61,8 +69,9 @@ jobs:
           source_sha="$(git rev-parse HEAD)"
           branch_slug="$(printf '%s' "$SOURCE_BRANCH" | LC_ALL=C tr -c 'A-Za-z0-9._-' '_' | cut -c1-80)"
           echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+          echo "sha_short=${source_sha:0:12}" >> "$GITHUB_OUTPUT"
           echo "branch_slug=$branch_slug" >> "$GITHUB_OUTPUT"
-          echo "artifact_name=EMBEDDED-${branch_slug}-${source_sha:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+          echo "artifact_name=intermediate-${branch_slug}-${source_sha:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Java
         uses: actions/setup-java@v6.0.1
@@ -123,16 +132,16 @@ jobs:
         id: upload
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: intermediate-${{ steps.source.outputs.artifact_name }}
+          name: ${{ steps.source.outputs.artifact_name }}
           path: Bilibili_Innocent_Lab/app/build/outputs/apk/embedded/app-embedded.apk
           if-no-files-found: error
           retention-days: 1
 
       - name: Upload embedded R8 symbols
-        if: ${{ !cancelled() && steps.source.outcome == 'success' }}
+        if: ${{ !cancelled() && inputs.keep_symbols && steps.source.outcome == 'success' }}
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: symbols-${{ steps.source.outputs.artifact_name }}
+          name: symbols-${{ steps.source.outputs.branch_slug }}-${{ steps.source.outputs.sha_short }}
           path: Bilibili_Innocent_Lab/app/build/outputs/mapping/embedded/
           if-no-files-found: warn
           retention-days: 14
@@ -180,6 +189,7 @@ jobs:
           EXPECTED_CERT_SHA256: ${{ secrets.ANDROID_SIGNING_CERT_SHA256 }}
           SOURCE_BRANCH: ${{ inputs.source_branch }}
           SOURCE_SHA: ${{ needs.build.outputs.source_sha }}
+          SHA_SHORT: ${{ needs.build.outputs.sha_short }}
           BRANCH_SLUG: ${{ needs.build.outputs.branch_slug }}
           EXPECTED_PACKAGE: ${{ env.EMBEDDED_PACKAGE }}
         run: |
@@ -197,24 +207,26 @@ jobs:
           printf '%s' "$SIGNING_KEY_BASE64" | base64 --decode > "$keystore"
           test -s "$keystore"
 
-          apk_filename="BIL-${BRANCH_SLUG}-${SOURCE_SHA:0:12}-embedded.apk"
-          mkdir -p embedded-artifact
+          apk_filename="BIL-${BRANCH_SLUG}-${SHA_SHORT}-embedded.apk"
+          mkdir -p embedded-apk
           tools="$ANDROID_HOME/build-tools/37.0.0"
           # apksigner strips the disposable signature before signing with the fixed key.
+          # The v4 sidecar is not needed for distribution, so keep a single-file artifact.
           "$tools/apksigner" sign --ks "$keystore" --ks-key-alias "$SIGNING_KEY_ALIAS" \
             --ks-pass env:SIGNING_STORE_PASSWORD --key-pass env:SIGNING_KEY_PASSWORD \
-            --out "embedded-artifact/$apk_filename" intermediate/app-embedded.apk
-          "$tools/apksigner" verify --verbose --print-certs "embedded-artifact/$apk_filename" > embedded-artifact/signature.txt
+            --v4-signing-enabled false \
+            --out "embedded-apk/$apk_filename" intermediate/app-embedded.apk
+          "$tools/apksigner" verify --verbose --print-certs "embedded-apk/$apk_filename" > "$RUNNER_TEMP/signature.txt"
           # Build Tools 37 prefixes these lines with V2/V3.0 instead of Signer #1.
-          actual="$(sed -n 's/^.*certificate SHA-256 digest: //p' embedded-artifact/signature.txt | tr -d ': \r' | tr 'A-F' 'a-f' | sort -u)"
+          actual="$(sed -n 's/^.*certificate SHA-256 digest: //p' "$RUNNER_TEMP/signature.txt" | tr -d ': \r' | tr 'A-F' 'a-f' | sort -u)"
           expected="$(printf '%s' "$EXPECTED_CERT_SHA256" | tr -d ':[:space:]' | tr 'A-F' 'a-f')"
           [[ "$expected" =~ ^[0-9a-f]{64}$ && "$actual" == "$expected" ]]
-          grep -Eq '^Number of signers: 1$' embedded-artifact/signature.txt
+          grep -Eq '^Number of signers: 1$' "$RUNNER_TEMP/signature.txt"
 
-          "$tools/aapt" dump badging "embedded-artifact/$apk_filename" > embedded-artifact/apk-info.txt
-          package_name="$(sed -n "s/^package: name='\([^']*\)'.*/\1/p" embedded-artifact/apk-info.txt | head -n 1)"
-          version_code="$(sed -n "s/^package: name='[^']*' versionCode='\([^']*\)'.*/\1/p" embedded-artifact/apk-info.txt | head -n 1)"
-          version_name="$(sed -n "s/^package: name='[^']*' versionCode='[^']*' versionName='\([^']*\)'.*/\1/p" embedded-artifact/apk-info.txt | head -n 1)"
+          "$tools/aapt" dump badging "embedded-apk/$apk_filename" > "$RUNNER_TEMP/apk-info.txt"
+          package_name="$(sed -n "s/^package: name='\([^']*\)'.*/\1/p" "$RUNNER_TEMP/apk-info.txt" | head -n 1)"
+          version_code="$(sed -n "s/^package: name='[^']*' versionCode='\([^']*\)'.*/\1/p" "$RUNNER_TEMP/apk-info.txt" | head -n 1)"
+          version_name="$(sed -n "s/^package: name='[^']*' versionCode='[^']*' versionName='\([^']*\)'.*/\1/p" "$RUNNER_TEMP/apk-info.txt" | head -n 1)"
           if [[ "$package_name" != "$EXPECTED_PACKAGE" ]]; then
             echo "Refusing to publish unexpected package: $package_name" >&2
             exit 1
@@ -223,12 +235,12 @@ jobs:
             echo 'APK version metadata is missing.' >&2
             exit 1
           fi
-          if grep -q '^application-debuggable' embedded-artifact/apk-info.txt; then
+          if grep -q '^application-debuggable' "$RUNNER_TEMP/apk-info.txt"; then
             echo 'Refusing to publish a debuggable APK.' >&2
             exit 1
           fi
 
-          apk_sha256="$(sha256sum "embedded-artifact/$apk_filename" | awk '{print $1}')"
+          apk_sha256="$(sha256sum "embedded-apk/$apk_filename" | awk '{print $1}')"
           {
             printf 'build_channel=embedded-test\n'
             printf 'embedded_mode_supported=true\n'
@@ -245,27 +257,33 @@ jobs:
             printf 'apk_filename=%s\n' "$apk_filename"
             printf 'apk_sha256=%s\n' "$apk_sha256"
             printf 'run_url=%s/%s/actions/runs/%s\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
-          } > embedded-artifact/build-info.txt
-          cat > embedded-artifact/READ-ME-FIRST-INTERNAL-TEST.txt <<'NOTICE'
-          集成模式内测包（仅供内测群验证）
-
-          与正式 Release 同形态、同固定签名，但包名为
-          com.Bilibili_Innocent_Lab.xposedmodule.embedded，并已打开集成模式门控。
-          它与正式模块可以并存；配置、条款、免 Root 授权和历史各自独立。
-          重新修补宿主时必须使用同一张固定证书签名，否则 signature 权限通道会降级。
-          本包不是 Release，不随 Nightly 发布，不代表集成模式已恢复对外支持。
-          反馈请附分支名、source_sha、构建链接、宿主版本、系统/设备与注入框架。
-          NOTICE
-          (cd embedded-artifact && sha256sum "$apk_filename" build-info.txt > SHA256SUMS && sha256sum -c SHA256SUMS)
-          cat embedded-artifact/READ-ME-FIRST-INTERNAL-TEST.txt embedded-artifact/build-info.txt >> "$GITHUB_STEP_SUMMARY"
+          } | tee "$RUNNER_TEMP/build-info.txt"
+          {
+            echo
+            echo '### 集成模式内测包'
+            echo
+            echo '与正式 Release 同形态、同固定签名，但包名为 `com.Bilibili_Innocent_Lab.xposedmodule.embedded`，并已打开集成模式门控。'
+            echo '它与正式模块可以并存；配置、条款、免 Root 授权和历史各自独立。'
+            echo '重新修补宿主时必须使用同一张固定证书签名，否则 signature 权限通道会降级。'
+            echo '本包不是 Release，不随 Nightly 发布，不代表集成模式已恢复对外支持。'
+          } >> "$GITHUB_STEP_SUMMARY"
+          cat "$RUNNER_TEMP/build-info.txt" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload verified signed embedded APK
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: ${{ needs.build.outputs.artifact_name }}
-          path: embedded-artifact/
+          # This artifact contains exactly one file: the installable APK.
+          name: BIL-embedded-${{ needs.build.outputs.branch_slug }}-${{ needs.build.outputs.sha_short }}
+          path: embedded-apk/
           if-no-files-found: error
           retention-days: 30
+
+      - name: Remove intermediate artifact
+        if: ${{ success() }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.build.outputs.artifact_id }}
+        run: gh api -X DELETE "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID"
 
       - name: Remove temporary release keystore
         if: ${{ always() }}
